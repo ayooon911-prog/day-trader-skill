@@ -85,6 +85,17 @@ close, so "flat by close" at 15:55 rings at 12:55 on those days.
   `get_stock_snapshot`, IBKR `get_price_snapshot`) and write it into
   `trader/prices.json` as `{"as_of": "...Z", "prices": {"TSLA": 366.48}}`.
 
+## Discord (phone and tablet alerts)
+
+Set `DISCORD_WEBHOOK_URL` to a channel webhook URL (channel settings >
+Integrations > Webhooks > Copy Webhook URL) and `check` also posts every
+ring to that channel, so it reaches the Discord app as a push notification.
+Not with `--offline` or `--no-push`. `alerts.py notify-test` sends one test
+message. The URL is a secret (anyone holding it can post to the channel):
+keep it in the environment, never in the chat or a committed file. Messages
+never @mention anyone, and an error never prints the URL. The host
+`discord.com` must be allowed on the network.
+
 ## The NYSE clock
 
 Regular session 9:30 a.m. to 4:00 p.m. New York time, closed on weekends and

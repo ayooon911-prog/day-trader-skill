@@ -14,6 +14,10 @@
     python3 alerts.py check --now "2026-10-19 15:55" --offline tests/fixtures/trader-alerts
     python3 alerts.py list
     python3 alerts.py reset tsla-plan-stop
+    python3 alerts.py notify-test                    # one test message to DISCORD_WEBHOOK_URL
+
+Discord: when DISCORD_WEBHOOK_URL holds a channel webhook URL, check also posts
+every ring to that channel (not with --offline or --no-push). No @mentions.
 
 Rule types:
   above / target  the price is at or above "price"
@@ -269,6 +273,42 @@ def _get(url, timeout=20):
         return e.code, body
     except urllib.error.URLError as e:
         raise AlertError("could not reach %s: %s" % (url.split("/")[2], e.reason))
+
+
+# ---------------------------------------------------------------- discord
+
+DISCORD_ENV = "DISCORD_WEBHOOK_URL"
+DISCORD_RE = re.compile(r"^https://(discord\.com|discordapp\.com)/api/webhooks/\d+/[A-Za-z0-9_-]+$")
+
+
+def discord_webhook(env=None):
+    """The webhook URL from DISCORD_WEBHOOK_URL, or None. A malformed one is an AlertError."""
+    url = (env if env is not None else os.environ).get(DISCORD_ENV, "").strip()
+    if not url:
+        return None
+    if not DISCORD_RE.match(url):
+        raise AlertError("%s is not a Discord webhook URL (https://discord.com/api/webhooks/ID/TOKEN)" % DISCORD_ENV)
+    return url
+
+
+def discord_payload(message):
+    """One Discord message per alert. Never mentions @everyone or anyone else."""
+    return {"username": "trader-alerts", "content": message[:1900], "allowed_mentions": {"parse": []}}
+
+
+def send_discord(url, message, timeout=15):
+    """POST one alert to the webhook. Errors come back as a string, never with the URL in them."""
+    body = json.dumps(discord_payload(message)).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"User-Agent": UA, "Content-Type": "application/json"})
+    try:
+        with _urlopen(req, timeout=timeout) as r:
+            r.read()
+        return None
+    except urllib.error.HTTPError as e:
+        return "Discord answered HTTP %d" % e.code
+    except urllib.error.URLError as e:
+        return "could not reach Discord: %s" % e.reason
 
 
 def fetch(url, timeout=20):
@@ -597,6 +637,15 @@ def cmd_check(a):
     quotes, errors = (get_quotes(syms, a.source, a.offline) if syms else ({}, []))
     state = _read(a.state, {})
     rings, state = evaluate(rules, quotes, status, state, now)
+    pushed, push_err = 0, []
+    hook = None if (a.no_push or a.offline) else discord_webhook()
+    if hook and rings:
+        for r in rings:
+            err = send_discord(hook, "\U0001F514 " + r["message"])
+            if err:
+                push_err.append(err)
+            else:
+                pushed += 1
     if not a.no_write:
         _write(a.state, state)
         if quotes:
@@ -614,6 +663,10 @@ def cmd_check(a):
                 len(watched), (", " + ", ".join("%s $%.2f" % (s, quotes[s]["price"]) for s in syms if s in quotes))
                 if quotes else ""))
         for e in errors:
+            print("error: " + e)
+        if pushed:
+            print("Sent %d alert(s) to Discord." % pushed)
+        for e in push_err:
             print("error: " + e)
         if rings:
             print("An alert is information, not an order. A bracket's stop-loss and take-profit already sit at "
@@ -704,6 +757,17 @@ def cmd_list(a):
     return 0
 
 
+def cmd_notify_test(a):
+    hook = discord_webhook()
+    if not hook:
+        raise AlertError("%s is not set: add your Discord webhook URL as that environment variable" % DISCORD_ENV)
+    err = send_discord(hook, a.message)
+    if err:
+        raise AlertError(err)
+    print("Sent a test message to Discord.")
+    return 0
+
+
 def cmd_reset(a):
     state = _read(a.state, {})
     if a.id not in state.get("rung", {}):
@@ -742,6 +806,9 @@ def main(argv=None):
     p.add_argument("--state", default="trader/state/alerts.json")
     p.add_argument("--prices-out", default="trader/prices.json")
     p.add_argument("--no-write", action="store_true")
+    p.add_argument("--no-push", action="store_true", help="do not send rings to Discord")
+    p = sub.add_parser("notify-test", help="send a test message to the Discord webhook")
+    p.add_argument("--message", default="\U0001F514 trader-alerts test: Discord alerts are working.")
     p = sub.add_parser("add", help="add a rule")
     p.add_argument("--rules", default="trader/alerts.json")
     p.add_argument("--state", default="trader/state/alerts.json")
@@ -777,7 +844,7 @@ def main(argv=None):
         return 1
     try:
         return {"clock": cmd_clock, "quote": cmd_quote, "check": cmd_check, "add": cmd_add,
-                "list": cmd_list, "reset": cmd_reset}[a.cmd](a)
+                "list": cmd_list, "reset": cmd_reset, "notify-test": cmd_notify_test}[a.cmd](a)
     except AlertError as e:
         print("alerts.py: %s" % e, file=sys.stderr)
         return 1

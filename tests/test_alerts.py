@@ -450,5 +450,45 @@ class Cli(unittest.TestCase):
         self.assertIn("no rules", err)
 
 
+class Discord(unittest.TestCase):
+    URL = "https://discord.com/api/webhooks/123456/abc_DEF-9"
+
+    def setUp(self):
+        self.saved = alerts._urlopen
+        self.sent = []
+
+    def tearDown(self):
+        alerts._urlopen = self.saved
+
+    def fake(self, code=204):
+        def urlopen(req, timeout=None):
+            self.sent.append((req.full_url, req.get_method(), json.loads(req.data.decode("utf-8"))))
+            if code >= 400:
+                raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(b""))
+            return io.BytesIO(b"")
+        alerts._urlopen = urlopen
+
+    def test_webhook_from_env(self):
+        self.assertIsNone(alerts.discord_webhook({}))
+        self.assertEqual(alerts.discord_webhook({"DISCORD_WEBHOOK_URL": " %s " % self.URL}), self.URL)
+        with self.assertRaises(alerts.AlertError):
+            alerts.discord_webhook({"DISCORD_WEBHOOK_URL": "https://evil.example/api/webhooks/1/x"})
+
+    def test_payload_never_mentions_anyone(self):
+        p = alerts.discord_payload("@everyone TSLA hit your stop")
+        self.assertEqual(p["allowed_mentions"], {"parse": []})
+        self.assertEqual(len(alerts.discord_payload("x" * 5000)["content"]), 1900)
+
+    def test_send_posts_json_and_hides_the_url_in_errors(self):
+        self.fake()
+        self.assertIsNone(alerts.send_discord(self.URL, "TSLA stop"))
+        self.assertEqual(self.sent[0][:2], (self.URL, "POST"))
+        self.assertEqual(self.sent[0][2]["content"], "TSLA stop")
+        self.fake(404)
+        err = alerts.send_discord(self.URL, "x")
+        self.assertEqual(err, "Discord answered HTTP 404")
+        self.assertNotIn("abc_DEF", err)
+
+
 if __name__ == "__main__":
     unittest.main()
